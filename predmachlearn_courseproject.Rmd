@@ -1,0 +1,157 @@
+---
+title: "Practical Machine Learning (predmachlearn-032) Course Project"
+author: "Mark van den Hurk"
+date: "September 25, 2015"
+output: html_document
+---
+
+R code has been generated and executed within RStudio version 0.98.1091 running on a 64-bit Apple MacBook machine.
+
+<br>
+
+## Executive Summary
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. In this project, data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants [[1]](http://groupware.les.inf.puc-rio.br/har#ixzz3mxQEfcsw) was used to predict the manner in which they performed a unilateral dumbbell biceps curl exercise (`classe` variable) -- the participants were asked to perform one set of 10 repetitions correctly and incorrectly in 5 different fashions (see the section on the weight Lifting Exercise Dataset [here](http://groupware.les.inf.puc-rio.br/har) for more info).
+
+The dataset (*n* = 19,622 total observations) was randomly subsampled without replacement into two parts: 70% (*n* = 13,737 observations) was used to build and fit a machine learning algorithm based on Random Forest, while the remaining 30% of observations (*n* = 5,885) were used for testing the model (cross-validation). Analysis of model statistics revealed a classifier accuracy of >95% (i.e., an expected out-of-sample error of <5%). Overall, we conclude that the model developed here performs well at predicting the fashion with which dumbbell bicep curls are executed. Therefore, the machine learning algorithm was applied to 20 different cases. *Note: The prediction model was built on data obtained from 6 young healthy individuals. It should be taken into account that the model might perform differently (i.e., with different accuracy) under different conditions, e.g. when human activity recognition data from elderly subjects is used.*
+
+<br>
+
+## Model Building and Cross-Validation
+
+In summary, the following approach was used for building the model and performing cross-validation:<ol>
+<li>**Getting and loading the training data**. The training data was obtained from [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and loaded into R (variable `trainingData`) for further processing and analysis.</li>
+<li>**Data slicing**. The training data was randomly split into two subsets (`training`, 70%; `testing`, 30%) for, respectively, (1) building/fitting the prediction model and (2) cross-validation (i.e., evaluation of model performance).</li>
+<li>**Data cleaning** to reduce the number of predictor variables in the training data by (1) removing non-explanatory variables, (2) removing variables with too many missing values, and (3) removing variables with near-zero variance.</li>
+<li>**Principal Component Analysis** to create a "summary" with principal components that captures most (95%) of the information present in the quantitative data. Performing PCA greatly reduced the number of predictors.</li>
+<li>**Creating the model using Random Forest**.</li>
+<li>**Cross-validation**: evaluating the performance of the created prediction model on the `testing` subset of the data.</li></ol>
+
+### Getting and loading the training data
+
+The following R code retrieves the training data from the cloud and loads it into R:
+```{r}
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+trainingData <- read.csv(url(trainUrl), na.strings = c("", "#DIV/0!", "NA")) ## empty elements in the data frame and Excel errors (#DIV/0!) are replaced by NAs
+```
+
+### Data slicing
+
+The following R code randomly subsamples the data into a `training` (70%) and `testing` (30%) subset for model building and cross-validation purposes, respectively:
+```{r}
+require(caret)
+inTrain <- createDataPartition(y = trainingData$classe, p = .7, list = FALSE)
+## subset out training and testing sets
+training <- trainingData[inTrain, ]
+testing <- trainingData[-inTrain, ]
+```
+
+### Data cleaning
+
+<b><u>Removing non-explanatory variables</u></b><br>
+The first seven variables/columns of the dataset (`X`, `user_name`, `raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`, `new_window`, and `num_window`) all contain information that we do *not* want to use in our predictions, so we can remove them:
+```{r}
+training <- training[, -c(1:7)]
+```
+
+<b><u>Removing variables with too many missing values</u></b><br>
+Variables with >95% of missing values will be discarded since prediction algorithms do not work well with them:
+```{r}
+dim(training)
+## select variables with >95% of missing data and exclude them from the analysis
+NArate <- apply(training, 2, function(x) sum(is.na(x))/nrow(training))
+training <- training[NArate < .95]
+dim(training)
+sum(is.na(training)) ## no more missing values (NAs)
+```
+
+<b><u>Removing variables with near-zero variance</b></u><br>
+Variables with very little (near-zero) variability are generally not good predictors. We can identify those variables using the following code -- and throw them out if they exist:
+```{r}
+nzv <- nearZeroVar(training, saveMetrics = TRUE)
+nzv ## identify variables with near-zero variance
+training <- training[!nzv$nzv] ## remove variables with near-zero variance from data, if identified
+dim(training)
+```
+
+No variables with near-zero variance were found/removed; the dimensions of the data frame are still the same.
+
+### Principal Component Analysis
+
+In case there are quantitative variables that are highly correlated with one another, it is not necessary to include all of them in the prediction model; a "summary" that captures most of the info in those quantitative variables will suffice. Hence, let's perform PCA on the entire data and obtain the principle components (PCs) that explain most (95%) of the variability. *As the resulting PCs are influenced by magnitude and skewness of the variables, it is generally a good idea to center, scale and perform skewness transformation of the variables prior to PCA [[2]](https://tgmstat.wordpress.com/2013/11/28/computing-and-visualizing-pca-in-r/).*
+```{r}
+require(caret)
+preProc <- preProcess(training[, -53], method = c("BoxCox", "center", "scale", "pca")) ## apply skewness transformation, center and scale the variables prior to PCA
+trainPC <- predict(preProc, training[, -53])
+dim(trainPC)
+```
+
+PCA needed `r dim(trainPC)[2]` components to capture 95% of the variance in the data.
+
+### Creating the model using Random Forest
+
+The following R code is used to build the model using Random Forest. Random Forest was chosen since it is highly accurate and runs efficiently on large data sets [[3]](https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm).
+```{r}
+require(randomForest)
+set.seed(12345) ## set seed for reproducability
+modFit <- train(training$classe ~ ., data = trainPC, method = "rf", trControl = trainControl(method = "none"), tuneGrid = data.frame(mtry = 3))
+## trainControl(method = "none") to speed up randomForest by turning off resampling 
+## data.frame(mtry = 3) to set the number of predictors sampled for splitting at each node to 3 
+modFit
+modFit$finalModel
+```
+
+### Cross-validation
+
+Prior to cross-validation, we need to apply the same transformations that were applied to the `training` subset, to the `testing` subset:
+```{r}
+testing <- testing[, -c(1:7)]
+NArate <- apply(testing, 2, function(x) sum(is.na(x))/nrow(testing))
+testing <- testing[NArate < .95]
+testing <- testing[!nzv$nzv]
+testPC <- predict(preProc, testing[, -53])
+cm <- confusionMatrix(testing$classe, predict(modFit, testPC))
+cm
+```
+
+Using the `testing` (cross-validation) subset of the data, the model statistics reveal a classifier accuracy of `r round(cm$overall['Accuracy'][[1]], 4) * 100`%. The expected out-of-sample error (i.e., the expected number of misclassified observations / total oservations), therefore, equals to 100% - `r round(cm$overall['Accuracy'][[1]], 4) * 100`% = `r 100 - (round(cm$overall['Accuracy'][[1]], 4) * 100)`%.
+
+<br>
+
+## Prediction of twenty test cases
+
+Given the high accuracy of the built machine learning algorithm, the model was applied to estimate the classes of twenty test cases:
+```{r}
+## download data of test cases
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testCases <- read.csv(url(testUrl), na.strings = c("", "#DIV/0!", "NA"))
+
+## apply transformations
+testCases <- testCases[, -c(1:7)]
+NArate <- apply(testCases, 2, function(x) sum(is.na(x))/nrow(testCases))
+testCases <- testCases[NArate < .95]
+testCases <- testCases[!nzv$nzv]
+testCasesPC <- predict(preProc, testCases[, -53])
+testCases$classe <- predict(modFit, testCasesPC)
+
+## generate files for submission
+answers <- as.character(testCases$classe)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_", i, ".txt")
+    write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, col.names = FALSE)
+  }
+}
+pml_write_files(answers)
+```
+
+<br>
+
+## References
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3mxQEfcsw
+<br>
+[2] Martins, T.G. Computing and visualizing PCA in R. URL: https://tgmstat.wordpress.com/2013/11/28/computing-and-visualizing-pca-in-r/
+<br>
+[3] Breiman, L.; Cutler, A (Department of Statistics; University of California, Berkeley). Random Forests. URL: https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm
